@@ -1,0 +1,690 @@
+import numpy as np
+from PIL import Image
+import matplotlib.pyplot as plt
+
+
+# ============================================================
+# 1. BASIC TRANSFORMATION FUNCTION
+# ============================================================
+
+def transform_image(img, M, fill=0):
+
+    img = np.asarray(img)
+    H, W = img.shape[:2]
+
+    M = np.asarray(M, dtype=float)
+
+    # Image corners with origin at center
+    corners = np.array([
+        [-W / 2,  W / 2, W / 2, -W / 2],
+        [ H / 2,  H / 2, -H / 2, -H / 2]
+    ])
+
+    new = M @ corners
+
+    W_out = int(
+        np.ceil(new[0].max() - new[0].min() - 1e-9)
+    )
+
+    H_out = int(
+        np.ceil(new[1].max() - new[1].min() - 1e-9)
+    )
+
+    # Output pixel coordinates
+    rows, cols = np.mgrid[0:H_out, 0:W_out]
+
+    x_out = cols - (W_out - 1) / 2
+    y_out = (H_out - 1) / 2 - rows
+
+    # Inverse transformation
+    Minv = np.linalg.inv(M)
+
+    x_src = (
+        Minv[0, 0] * x_out +
+        Minv[0, 1] * y_out
+    )
+
+    y_src = (
+        Minv[1, 0] * x_out +
+        Minv[1, 1] * y_out
+    )
+
+    # Convert back to image coordinates
+    src_col = np.rint(
+        x_src + (W - 1) / 2
+    ).astype(int)
+
+    src_row = np.rint(
+        (H - 1) / 2 - y_src
+    ).astype(int)
+
+    # Check valid pixels
+    inside = (
+        (src_row >= 0) &
+        (src_row < H) &
+        (src_col >= 0) &
+        (src_col < W)
+    )
+
+    # Create output
+    out = np.full(
+        (H_out, W_out) + img.shape[2:],
+        fill,
+        dtype=img.dtype
+    )
+
+    out[inside] = img[
+        src_row[inside],
+        src_col[inside]
+    ]
+
+    return out
+
+
+# ============================================================
+# 2. AFFINE MATRIX CREATION
+# ============================================================
+
+def make_affine(A=None, t=(0, 0)):
+
+    if A is None:
+        A = np.eye(2)
+    else:
+        A = np.asarray(A, dtype=float)
+
+    M = np.eye(3)
+
+    M[:2, :2] = A
+    M[:2, 2] = t
+
+    return M
+
+
+# ============================================================
+# 3. TRANSLATION MATRIX
+# ============================================================
+
+def translation_matrix(tx, ty):
+
+    return make_affine(
+        np.eye(2),
+        (tx, ty)
+    )
+
+
+# ============================================================
+# 4. ROTATION MATRIX
+# ============================================================
+
+def rotation_matrix(theta):
+
+    theta = np.radians(theta)
+
+    return make_affine(
+        [
+            [np.cos(theta), -np.sin(theta)],
+            [np.sin(theta),  np.cos(theta)]
+        ]
+    )
+
+
+# ============================================================
+# 5. AFFINE TRANSFORMATION
+# ============================================================
+
+def affine_transform_image(
+    img,
+    M,
+    out_shape="same",
+    fill=0
+):
+
+    img = np.asarray(img)
+
+    H, W = img.shape[:2]
+
+    M = np.asarray(M, dtype=float)
+
+    # Image corners
+    corners = np.array([
+        [-W / 2,  W / 2, W / 2, -W / 2],
+        [ H / 2,  H / 2, -H / 2, -H / 2],
+        [1, 1, 1, 1]
+    ])
+
+    # Transform corners
+    new = M @ corners
+
+    ox = oy = 0.0
+
+    # Output size same as input
+    if out_shape == "same":
+
+        H_out = H
+        W_out = W
+
+    # Output size automatically fits transformed image
+    elif out_shape == "fit":
+
+        W_out = int(
+            np.ceil(
+                new[0].max() -
+                new[0].min() -
+                1e-9
+            )
+        )
+
+        H_out = int(
+            np.ceil(
+                new[1].max() -
+                new[1].min() -
+                1e-9
+            )
+        )
+
+        ox = (
+            new[0].max() +
+            new[0].min()
+        ) / 2
+
+        oy = (
+            new[1].max() +
+            new[1].min()
+        ) / 2
+
+    else:
+
+        H_out, W_out = out_shape
+
+    # Output coordinates
+    rows, cols = np.mgrid[
+        0:H_out,
+        0:W_out
+    ]
+
+    x_out = (
+        cols -
+        (W_out - 1) / 2 +
+        ox
+    )
+
+    y_out = (
+        (H_out - 1) / 2 -
+        rows +
+        oy
+    )
+
+    # Inverse mapping
+    Minv = np.linalg.inv(M)
+
+    x_src = (
+        Minv[0, 0] * x_out +
+        Minv[0, 1] * y_out +
+        Minv[0, 2]
+    )
+
+    y_src = (
+        Minv[1, 0] * x_out +
+        Minv[1, 1] * y_out +
+        Minv[1, 2]
+    )
+
+    # Convert coordinates
+    src_col = np.rint(
+        x_src + (W - 1) / 2
+    ).astype(int)
+
+    src_row = np.rint(
+        (H - 1) / 2 - y_src
+    ).astype(int)
+
+    # Valid pixels
+    inside = (
+        (src_row >= 0) &
+        (src_row < H) &
+        (src_col >= 0) &
+        (src_col < W)
+    )
+
+    # Output image
+    out = np.full(
+        (H_out, W_out) + img.shape[2:],
+        fill,
+        dtype=img.dtype
+    )
+
+    out[inside] = img[
+        src_row[inside],
+        src_col[inside]
+    ]
+
+    return out
+
+
+# ============================================================
+# 6. TRANSLATE IMAGE
+# ============================================================
+
+def translate(
+    img,
+    tx,
+    ty,
+    out_shape="same"
+):
+
+    M = translation_matrix(tx, ty)
+
+    return affine_transform_image(
+        img,
+        M,
+        out_shape
+    )
+
+
+# ============================================================
+# 7. GENERAL AFFINE TRANSFORMATION
+# ============================================================
+
+def affine(
+    img,
+    A,
+    t=(0, 0),
+    out_shape="same"
+):
+
+    M = make_affine(A, t)
+
+    return affine_transform_image(
+        img,
+        M,
+        out_shape
+    )
+
+
+# ============================================================
+# 8. ESTIMATE AFFINE MATRIX FROM POINTS
+# ============================================================
+
+def estimate_affine(src_pts, dst_pts):
+
+    src = np.asarray(src_pts, dtype=float)
+    dst = np.asarray(dst_pts, dtype=float)
+
+    rows = []
+    rhs = []
+
+    for (x, y), (xp, yp) in zip(src, dst):
+
+        rows.append(
+            [x, y, 1, 0, 0, 0]
+        )
+
+        rhs.append(xp)
+
+        rows.append(
+            [0, 0, 0, x, y, 1]
+        )
+
+        rhs.append(yp)
+
+    A = np.array(rows)
+    b = np.array(rhs)
+
+    # Least squares solution
+    p, _, _, _ = np.linalg.lstsq(
+        A,
+        b,
+        rcond=None
+    )
+
+    M = np.array([
+        [p[0], p[1], p[2]],
+        [p[3], p[4], p[5]],
+        [0,    0,    1]
+    ])
+
+    return M
+
+
+# ============================================================
+# 9. APPLY HOMOGRAPHY TO POINTS
+# ============================================================
+
+def apply_homography_points(H, pts):
+
+    pts = np.asarray(
+        pts,
+        dtype=float
+    )
+
+    ones = np.ones(
+        (len(pts), 1)
+    )
+
+    p = np.hstack([
+        pts,
+        ones
+    ]) @ np.asarray(H, dtype=float).T
+
+    return (
+        p[:, :2] /
+        p[:, 2:3]
+    )
+
+
+# ============================================================
+# 10. ESTIMATE HOMOGRAPHY
+# ============================================================
+
+def estimate_homography(
+    src_pts,
+    dst_pts
+):
+
+    src = np.asarray(
+        src_pts,
+        dtype=float
+    )
+
+    dst = np.asarray(
+        dst_pts,
+        dtype=float
+    )
+
+    if len(src) < 4:
+
+        raise ValueError(
+            "At least 4 point pairs are required"
+        )
+
+    rows = []
+
+    for (x, y), (xp, yp) in zip(
+        src,
+        dst
+    ):
+
+        rows.append([
+            x, y, 1,
+            0, 0, 0,
+            -xp * x,
+            -xp * y,
+            -xp
+        ])
+
+        rows.append([
+            0, 0, 0,
+            x, y, 1,
+            -yp * x,
+            -yp * y,
+            -yp
+        ])
+
+    A = np.array(rows)
+
+    # SVD
+    _, S, Vt = np.linalg.svd(A)
+
+    # Last row of Vt gives solution
+    h = Vt[-1]
+
+    H = h.reshape(
+        3,
+        3
+    )
+
+    # Normalize
+    H = H / H[2, 2]
+
+    return H
+
+
+# ============================================================
+# 11. HOMOGRAPHY WARP
+# ============================================================
+
+def warp_homography(
+    img,
+    H,
+    out_shape,
+    fill=0
+):
+
+    img = np.asarray(img)
+
+    h_src, w_src = img.shape[:2]
+
+    h_out, w_out = out_shape
+
+    # Output coordinates
+    rows, cols = np.mgrid[
+        0:h_out,
+        0:w_out
+    ]
+
+    x_out = cols.astype(float)
+    y_out = rows.astype(float)
+
+    # Inverse homography
+    Hinv = np.linalg.inv(
+        np.asarray(H, dtype=float)
+    )
+
+    X = (
+        Hinv[0, 0] * x_out +
+        Hinv[0, 1] * y_out +
+        Hinv[0, 2]
+    )
+
+    Y = (
+        Hinv[1, 0] * x_out +
+        Hinv[1, 1] * y_out +
+        Hinv[1, 2]
+    )
+
+    Wd = (
+        Hinv[2, 0] * x_out +
+        Hinv[2, 1] * y_out +
+        Hinv[2, 2]
+    )
+
+    # Perspective division
+    with np.errstate(
+        divide="ignore",
+        invalid="ignore"
+    ):
+
+        x_src = X / Wd
+        y_src = Y / Wd
+
+    # Nearest-neighbor sampling
+    src_col = np.rint(
+        x_src
+    ).astype(int)
+
+    src_row = np.rint(
+        y_src
+    ).astype(int)
+
+    # Valid pixels
+    inside = (
+        np.isfinite(x_src) &
+        np.isfinite(y_src) &
+        (src_row >= 0) &
+        (src_row < h_src) &
+        (src_col >= 0) &
+        (src_col < w_src)
+    )
+
+    # Output
+    out = np.full(
+        (h_out, w_out) +
+        img.shape[2:],
+        fill,
+        dtype=img.dtype
+    )
+
+    out[inside] = img[
+        src_row[inside],
+        src_col[inside]
+    ]
+
+    return out
+
+
+# ============================================================
+#                    MAIN PROGRAM
+# ============================================================
+
+if __name__ == "__main__":
+
+    # --------------------------------------------------------
+    # LOAD IMAGE
+    # --------------------------------------------------------
+
+    input_file = "test1.png"
+
+    img = np.array(
+        Image.open(input_file)
+    )
+
+    print("Image loaded successfully!")
+    print("Image shape:", img.shape)
+
+
+    # ========================================================
+    # PART 1: AFFINE TRANSFORMATION
+    # ========================================================
+
+    # Example affine matrix
+    #
+    # [ 1   0   50 ]
+    # [ 0   1   30 ]
+    # [ 0   0    1 ]
+    #
+    # This translates the image by (50, 30)
+
+    M = np.array([
+        [1, 0, 50],
+        [0, 1, 30],
+        [0, 0, 1]
+    ])
+
+    print("\nAffine Matrix:")
+    print(M)
+
+    # Apply affine transformation
+    affine_result = affine_transform_image(
+        img,
+        M,
+        out_shape="fit"
+    )
+
+    # Save
+    Image.fromarray(
+        affine_result
+    ).save(
+        "affine_output.png"
+    )
+
+    print(
+        "Affine output saved as: affine_output.png"
+    )
+
+
+    # --------------------------------------------------------
+    # DISPLAY AFFINE RESULT
+    # --------------------------------------------------------
+
+    plt.figure()
+
+    plt.imshow(affine_result)
+
+    plt.title(
+        "Affine Transformation"
+    )
+
+    plt.axis("off")
+
+    plt.show()
+
+
+    # ========================================================
+    # PART 2: HOMOGRAPHY
+    # ========================================================
+
+    # Example point correspondences
+    #
+    # src = points in original image
+    # dst = desired points
+    #
+    # IMPORTANT:
+    # Replace these points with the points
+    # given in your assignment.
+
+    src_pts = np.array([
+        [100, 100],
+        [400, 100],
+        [400, 400],
+        [100, 400]
+    ])
+
+    dst_pts = np.array([
+        [80, 120],
+        [420, 80],
+        [450, 420],
+        [70, 400]
+    ])
+
+
+    # Calculate homography
+    H = estimate_homography(
+        src_pts,
+        dst_pts
+    )
+
+    print("\nHomography Matrix:")
+    print(H)
+
+
+    # Apply homography
+    #
+    # For demonstration we use
+    # the same image size.
+
+    homography_result = warp_homography(
+        img,
+        H,
+        img.shape[:2]
+    )
+
+
+    # Save result
+    Image.fromarray(
+        homography_result
+    ).save(
+        "homography_output.png"
+    )
+
+    print(
+        "Homography output saved as: homography_output.png"
+    )
+
+
+    # --------------------------------------------------------
+    # DISPLAY HOMOGRAPHY RESULT
+    # --------------------------------------------------------
+
+    plt.figure()
+
+    plt.imshow(
+        homography_result
+    )
+
+    plt.title(
+        "Projective / Homography Transformation"
+    )
+
+    plt.axis("off")
+
+    plt.show()
